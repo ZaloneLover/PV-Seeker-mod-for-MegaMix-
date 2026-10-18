@@ -1,0 +1,3 @@
+C:/Program Files (x86)/Steam/steamapps/common/Hatsune Miku Project DIVA Mega Mix Plus/pvseek-pvviewer-only-source/build/CMakeFiles/PvSeek.dir
+C:/Program Files (x86)/Steam/steamapps/common/Hatsune Miku Project DIVA Mega Mix Plus/pvseek-pvviewer-only-source/build/CMakeFiles/ALL_BUILD.dir
+C:/Program Files (x86)/Steam/steamapps/common/Hatsune Miku Project DIVA Mega Mix Plus/pvseek-pvviewer-only-source/build/CMakeFiles/ZERO_CHECK.dir

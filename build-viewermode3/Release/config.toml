@@ -1,0 +1,8 @@
+
+enabled = true
+dll = ["PvSeek.dll"]
+name = "PV Seek"
+description = "Jump to any time inside a PV (PV Viewer only)."
+version = "0.1"
+date = "16.10.2026"
+include = ["."]
