@@ -1,0 +1,51 @@
+name: Build PvSeek
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      # 1. Checkout your code
+      - name: Checkout Repository
+        uses: actions/checkout@v5
+
+      # 2. Install Microsoft Detours via vcpkg
+      - name: Install Detours via vcpkg
+        run: |
+          vcpkg install detours:x64-windows-static
+
+      # 3. Setup MSVC Developer Command Prompt
+      - name: Setup MSVC Developer Command Prompt
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+            arch: x64
+
+      # 4. Create dummy config files to satisfy the post-build copy command
+      - name: Create Default Config Files
+        run: |
+          if (!(Test-Path config.toml)) { Out-File -Encoding utf8 config.toml }
+          if (!(Test-Path pvseek.ini)) { Out-File -Encoding utf8 pvseek.ini }
+
+      # 5. Configure CMake
+      - name: Configure CMake
+        run: |
+          cmake -S . -B build-ci
+
+      # 6. Build the project
+      - name: Build Project
+        run: |
+          cmake --build build-ci --config Release
+
+      # 7. Upload the built DLL and files as a downloadable artifact
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PvSeek-Mod
+          path: build-ci/Release/
