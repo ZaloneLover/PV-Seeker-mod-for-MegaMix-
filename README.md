@@ -51,4 +51,3 @@ moving the script pointer by hand.
 - PVs with a video background: the script restarts the video, it may not match the new time.
 - A seek causes a short hitch (restart reloads the music and the movies).
 - Unpause the game before you seek. `restart` resumes the PV clock.
-- Seeking forward or backwards, then pausing, then resuming causes the pv to be seeked in considerable length forward automatically, depending on how long you had it paused, ranging from tens of seconds to even minutes.
