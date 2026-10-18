@@ -23,7 +23,7 @@
 //     - the hook target must look like a function start (16-byte aligned, after padding)
 //     - the first time it runs, the object it receives must have the expected layout
 //       (back pointer inside the PV data points to the pv_game); otherwise the mod disables itself
-//     - pv_game::restart is only used if it is found uniquely or given in the ini
+//     - pv_game::restart is compiled in and checked for a valid function start
 //   Calling a wrong restart() address WILL crash the game, so confirm that one by hand.
 
 #define WIN32_LEAN_AND_MEAN
@@ -50,13 +50,16 @@
 // ---------------------------------------------------------------------------------------
 namespace Game
 {
-    // Preferred image base is 0x140000000. The mode field address was found in the
-    // installed Mega Mix+ executable; the hook addresses are configured in pvseek.ini.
+    // Preferred image base is 0x140000000. These fixed addresses match the values
+    // from the supplied pvseek.ini and are compiled into the DLL.
     constexpr uintptr_t kImageBase = 0x140000000;
     constexpr uintptr_t kModeVar   = 0x140DAE930; // current exe: pv_game_data.type (int32)
-    constexpr uintptr_t kTickFn    = 0x14010EF00; // pv_game::sub_14010EF00, called every frame by pv_game::ctrl
-    constexpr uintptr_t kAnchorA   = 0x140104FB0; // pv_game::sub_140104FB0, called by pv_game::restart
-    constexpr uintptr_t kAnchorB   = 0x1400FCEB0; // pv_game::sub_1400FCEB0, called by pv_game::restart
+    constexpr uintptr_t kTickFn    = 0x14024B0E0; // fixed per-frame PV hook address
+    constexpr uintptr_t kAnchorA   = 0x140104FB0; // fallback restart-search anchor
+    constexpr uintptr_t kAnchorB   = 0x1400FCEB0; // fallback restart-search anchor
+    constexpr uintptr_t kRestartFn = 0x1402436F0; // pv_game::restart
+    constexpr uintptr_t kMusicPlayFn = 0x14023E2C0; // pv_game_music::play
+    constexpr uintptr_t kMusicLoadFn = 0x14023E440; // pv_game_music::load
 
     // Offsets inside pv_game_pv_data (ReDIVA field names are the original offsets).
     constexpr size_t kPvEnabled  = 0x00000; // bool  field_0
@@ -116,13 +119,13 @@ using MusicLoadFn = int32_t(__fastcall*)(void* music, int32_t type, void* path, 
 
 struct Settings
 {
-    uintptr_t tickAddr      = Game::kTickFn;  // function we hook; gets pv_game* in rcx every frame
-    uintptr_t modeAddr      = Game::kModeVar; // int32 holding the game mode
+    uintptr_t tickAddr      = Game::kTickFn;  // fixed function we hook; gets pv_game* in rcx every frame
+    uintptr_t modeAddr      = Game::kModeVar; // fixed int32 address holding the game mode
     uintptr_t anchorA       = Game::kAnchorA; // only used to auto-detect restart
     uintptr_t anchorB       = Game::kAnchorB;
-    uintptr_t restartAddr   = 0;   // pv_game::restart   (0 = try to auto-detect)
-    uintptr_t musicPlayAddr = 0;   // pv_game_music::play (0 = music is not shifted)
-    uintptr_t musicLoadAddr = 0;   // pv_game_music::load (0 = try to find it inside restart)
+    uintptr_t restartAddr   = Game::kRestartFn; // fixed pv_game::restart address
+    uintptr_t musicPlayAddr = Game::kMusicPlayFn; // fixed pv_game_music::play address
+    uintptr_t musicLoadAddr = Game::kMusicLoadFn; // fixed pv_game_music::load address
     int       viewerMode    = 3;   // observed in the running game's PV Viewer
     double    stepSmall     = 5.0; // seconds
     double    stepBig       = 30.0;
@@ -141,7 +144,7 @@ static struct State
     RestartFn   restart = nullptr;
     MusicPlayFn origMusicPlay = nullptr;
     MusicLoadFn origMusicLoad = nullptr;
-    bool      loadConfirmed = false;           // MusicLoadAddress was set by hand (so we trust it)
+    bool      loadConfirmed = false;           // the fixed MusicLoad address was supplied and passed checks
     long long musicNs = 0;                     // script time of the MUSIC_PLAY command (from the script)
     bool      inRestart = false;               // true while we call restart()
     float     pendingStart = 0.0f;             // music start (seconds) to use for load() during restart
@@ -231,13 +234,6 @@ static void LoadSettings()
         GetPrivateProfileStringA("PvSeek", key, "", buf, sizeof(buf), path);
         return buf[0] ? atof(buf) : def;
     };
-    g.cfg.tickAddr      = num("TickAddress", Game::kTickFn);
-    g.cfg.modeAddr      = num("ModeAddress", Game::kModeVar);
-    g.cfg.anchorA       = num("AnchorAAddress", Game::kAnchorA);
-    g.cfg.anchorB       = num("AnchorBAddress", Game::kAnchorB);
-    g.cfg.restartAddr   = num("RestartAddress", 0);
-    g.cfg.musicPlayAddr = num("MusicPlayAddress", 0);
-    g.cfg.musicLoadAddr = num("MusicLoadAddress", 0);
     g.cfg.viewerMode    = (int)num("ViewerMode", 3);
     g.cfg.stepSmall     = dbl("StepSmallSeconds", 5.0);
     g.cfg.stepBig       = dbl("StepBigSeconds", 30.0);
@@ -623,7 +619,7 @@ static void DoSeek(long long reqNs)
         return;
     }
 
-    if (!g.restart) { Log("seek ignored: pv_game::restart address is unknown (set RestartAddress in pvseek.ini)"); return; }
+    if (!g.restart) { Log("seek ignored: the fixed pv_game::restart address is unavailable; check kRestartFn in src/PvSeek.cpp"); return; }
 
     Log("seek to %.3f s (from %.3f s)", target * 1e-9, g.curNs.load() * 1e-9);
 
@@ -869,7 +865,7 @@ static int32_t __fastcall HookMusicLoad(void* music, int32_t type, void* path, b
     {
         static bool once = false;
         if (!once) { once = true; Log("music: load() got music object %p but pv_data says %p%s", music,
-                                      g.pv ? Rd<void*>(g.pv, Game::kPvMusic) : nullptr, g.loadConfirmed ? " (trusting MusicLoadAddress)" : ""); }
+                                      g.pv ? Rd<void*>(g.pv, Game::kPvMusic) : nullptr, g.loadConfirmed ? " (trusting the fixed MusicLoad address)" : ""); }
     }
     if (g.inRestart && type == 4 && g.pv && (sameMusic || g.loadConfirmed) && time >= 0.0f && time < 100000.0f)
     {
@@ -1056,13 +1052,12 @@ extern "C" __declspec(dllexport) void Init()
 
     if (!LooksLikeFunctionStart(tick))
     {
-        Log("TickAddress does not look like the start of a function, so this exe most likely does not");
-        Log("match ReDIVA's addresses. NOT hooking anything. Find the right address (see README) and set");
-        Log("TickAddress in pvseek.ini.");
+        Log("The fixed tick address does not look like the start of a function, so this exe most likely does not");
+        Log("match the compiled-in addresses. NOT hooking anything. Check the constants in src/PvSeek.cpp.");
         return;
     }
 
-    // ini addresses are exe addresses (as Ghidra/IDA show them); convert to real ones.
+    // Compiled-in addresses are exe addresses (as Ghidra/IDA show them); convert to real ones.
     // FindRestart() already returns a real address.
     uintptr_t restartReal = g.cfg.restartAddr ? Real(g.cfg.restartAddr) : FindRestart();
     if (restartReal && !LooksLikeFunctionStart((const uint8_t*)restartReal))
@@ -1070,33 +1065,33 @@ extern "C" __declspec(dllexport) void Init()
         Log("restart address 0x%llX does not look like a function start - ignoring it.", (unsigned long long)restartReal);
         restartReal = 0;
     }
-    g.cfg.restartAddr = restartReal;   // from here on: real address
+    g.cfg.restartAddr = restartReal; // from here on this is the real address
     uintptr_t musicReal = g.cfg.musicPlayAddr ? Real(g.cfg.musicPlayAddr) : 0;
     if (musicReal && !LooksLikeFunctionStart((const uint8_t*)musicReal))
     {
-        Log("MusicPlayAddress 0x%llX does not look like a function start - ignoring it.", (unsigned long long)musicReal);
+        Log("pv_game_music::play address 0x%llX does not look like a function start - ignoring it.", (unsigned long long)musicReal);
         musicReal = 0;
     }
     g.cfg.musicPlayAddr = musicReal;
     uintptr_t loadReal = g.cfg.musicLoadAddr ? Real(g.cfg.musicLoadAddr) : FindMusicLoad(restartReal);
     if (loadReal && !LooksLikeFunctionStart((const uint8_t*)loadReal))
     {
-        Log("MusicLoadAddress 0x%llX does not look like a function start - ignoring it.", (unsigned long long)loadReal);
+        Log("pv_game_music::load address 0x%llX does not look like a function start - ignoring it.", (unsigned long long)loadReal);
         loadReal = 0;
     }
     if (loadReal) Log("pv_game_music::load = 0x%llX", (unsigned long long)loadReal);
-    else Log("pv_game_music::load not found: set MusicLoadAddress in pvseek.ini (audio will NOT follow the seek)");
+    else Log("pv_game_music::load unavailable: check kMusicLoadFn in src/PvSeek.cpp (audio will NOT follow the seek)");
     if (g.cfg.restartAddr)
     {
         g.restart = (RestartFn)g.cfg.restartAddr;
         Log("pv_game::restart = 0x%llX", (unsigned long long)g.cfg.restartAddr);
     }
-    else Log("pv_game::restart not found: set RestartAddress in pvseek.ini");
+    else Log("pv_game::restart unavailable: check kRestartFn in src/PvSeek.cpp");
 
     g.origTick = (TickFn)tick;
     if (loadReal) { g.origMusicLoad = (MusicLoadFn)loadReal; g.loadConfirmed = g.cfg.musicLoadAddr != 0; }
     if (g.cfg.musicPlayAddr) g.origMusicPlay = (MusicPlayFn)g.cfg.musicPlayAddr;
-    else Log("MusicPlayAddress not set (not needed when MusicLoad works)");
+    else Log("pv_game_music::play unavailable: check kMusicPlayFn in src/PvSeek.cpp (not needed when MusicLoad works)");
 
     DetourTransactionBegin();
     DetourUpdateThread(GetCurrentThread());
